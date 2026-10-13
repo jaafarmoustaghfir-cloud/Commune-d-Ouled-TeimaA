@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Validation helper for Demande entity
+    function isValidDemande(data) {
+      return data.keys().hasAll([
+        'numeroSuivi', 'cin', 'nomComplet', 'dateNaissance', 'lieuNaissance',
+        'communeEnregistrement', 'anneeEnregistrement', 'numeroActe',
+        'telephone', 'adresse', 'typeDocument', 'nombreCopies', 'statut'
+      ]) &&
+      data.numeroSuivi is string && data.numeroSuivi.size() > 0 && data.numeroSuivi.size() <= 64 &&
+      data.cin is string && data.cin.size() > 0 && data.cin.size() <= 20 &&
+      data.nomComplet is string && data.nomComplet.size() > 0 && data.nomComplet.size() <= 150 &&
+      data.dateNaissance is string && data.dateNaissance.size() <= 20 &&
+      data.lieuNaissance is string && data.lieuNaissance.size() <= 100 &&
+      data.communeEnregistrement is string && data.communeEnregistrement.size() <= 100 &&
+      data.anneeEnregistrement is string && data.anneeEnregistrement.size() <= 10 &&
+      data.numeroActe is string && data.numeroActe.size() <= 30 &&
+      data.telephone is string && data.telephone.size() <= 30 &&
+      data.adresse is string && data.adresse.size() <= 250 &&
+      data.typeDocument is string && data.typeDocument.size() <= 50 &&
+      data.nombreCopies is number && data.nombreCopies >= 1 && data.nombreCopies <= 10 &&
+      data.statut is string && data.statut in ['Nouvelle', 'En cours', 'Pièces manquantes', 'Prêt pour retrait', 'Délivré', 'Rejetée'];
+    }
+
+    // Collection des demandes d'état civil
+    match /demandes/{demandeId} {
+      // Création ouverte à tous les citoyens (sans compte) avec validation stricte
+      allow create: if isValidId(demandeId) 
+                    && incoming().numeroSuivi == demandeId 
+                    && incoming().statut == 'Nouvelle'
+                    && isValidDemande(incoming());
+
+      // Lecture d'un document individuel autorisée par ID exact pour le suivi citoyen
+      allow get: if isValidId(demandeId);
+
+      // Lecture de la liste complète réservée aux employés municipaux authentifiés
+      allow list: if isSignedIn();
+
+      // Modification et suppression réservées aux employés municipaux authentifiés
+      allow update: if isSignedIn() 
+                    && isValidId(demandeId)
+                    && incoming().numeroSuivi == existing().numeroSuivi;
+
+      allow delete: if isSignedIn() && isValidId(demandeId);
+    }
+
+    // Collection de test de connectivité
+    match /test/{docId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+  }
+}

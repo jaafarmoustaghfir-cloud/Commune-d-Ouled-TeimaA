@@ -1,0 +1,6 @@
+{
+  "name": "Commune d'Ouled Teima - Bureau de l'État Civil",
+  "description": "Portail électronique sécurisé pour les demandes et la gestion de l'état civil de la Commune d'Ouled Teima.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

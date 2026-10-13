@@ -1,0 +1,138 @@
+{
+  "entities": {
+    "Demande": {
+      "title": "Demande",
+      "description": "Demande officielle de document d'etat civil pour la Commune d'Ouled Teima",
+      "type": "object",
+      "properties": {
+        "numeroSuivi": {
+          "type": "string",
+          "description": "Identifiant unique et numero de suivi de la demande",
+          "maxLength": 64
+        },
+        "cin": {
+          "type": "string",
+          "description": "Numero de la Carte Nationale d'Identite (CIN)",
+          "maxLength": 20
+        },
+        "nomComplet": {
+          "type": "string",
+          "description": "Nom et prenom complets du requerant",
+          "maxLength": 150
+        },
+        "dateNaissance": {
+          "type": "string",
+          "description": "Date de naissance (AAAA-MM-JJ)",
+          "maxLength": 20
+        },
+        "lieuNaissance": {
+          "type": "string",
+          "description": "Lieu ou ville de naissance",
+          "maxLength": 100
+        },
+        "communeEnregistrement": {
+          "type": "string",
+          "description": "Commune d'enregistrement de l'acte",
+          "maxLength": 100
+        },
+        "anneeEnregistrement": {
+          "type": "string",
+          "description": "Annee d'enregistrement du registre",
+          "maxLength": 10
+        },
+        "numeroActe": {
+          "type": "string",
+          "description": "Numero de l'acte (ex: 234/78)",
+          "maxLength": 30
+        },
+        "telephone": {
+          "type": "string",
+          "description": "Numero de telephone de contact",
+          "maxLength": 30
+        },
+        "email": {
+          "type": "string",
+          "description": "Adresse email facultative du requerant",
+          "maxLength": 120
+        },
+        "adresse": {
+          "type": "string",
+          "description": "Adresse de residence actuelle",
+          "maxLength": 250
+        },
+        "typeDocument": {
+          "type": "string",
+          "description": "Type d'acte demande",
+          "maxLength": 50
+        },
+        "nombreCopies": {
+          "type": "number",
+          "description": "Nombre de copies demandees (1 a 10)"
+        },
+        "statut": {
+          "type": "string",
+          "description": "Statut de traitement administratif",
+          "enum": ["Nouvelle", "En cours", "Pièces manquantes", "Prêt pour retrait", "Délivré", "Rejetée"]
+        },
+        "notesInternes": {
+          "type": "string",
+          "description": "Notes administratives reservees aux officiers d'etat civil",
+          "maxLength": 1000
+        },
+        "notesCitoyen": {
+          "type": "string",
+          "description": "Instructions ou motifs visibles par le citoyen",
+          "maxLength": 1000
+        },
+        "dateRetrait": {
+          "type": "string",
+          "description": "Date fixee pour le retrait du document",
+          "maxLength": 50
+        },
+        "piecesJointes": {
+          "type": "array",
+          "description": "Metadonnees des pieces jointes uploades sur Firebase Storage"
+        },
+        "cinRectoUrl": {
+          "type": "string",
+          "description": "URL Storage du recto de la CIN",
+          "maxLength": 1000
+        },
+        "cinVersoUrl": {
+          "type": "string",
+          "description": "URL Storage du verso de la CIN",
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp serveur de creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp serveur de mise a jour"
+        }
+      },
+      "required": [
+        "numeroSuivi",
+        "cin",
+        "nomComplet",
+        "dateNaissance",
+        "lieuNaissance",
+        "communeEnregistrement",
+        "anneeEnregistrement",
+        "numeroActe",
+        "telephone",
+        "adresse",
+        "typeDocument",
+        "nombreCopies",
+        "statut"
+      ]
+    }
+  },
+  "firestore": {
+    "/demandes/{demandeId}": {
+      "schema": "Demande",
+      "description": "Dossiers de demandes d'actes d'etat civil soumis a la commune"
+    }
+  }
+}

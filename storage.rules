@@ -1,0 +1,23 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Pièces justificatives des demandes d'état civil (demandes/{numeroSuivi}/...)
+    match /demandes/{numeroSuivi}/{allPaths=**} {
+      // Lecture strictement réservée aux fonctionnaires et agents authentifiés
+      // pour garantir la confidentialité totale des pièces d'identité et justificatifs des citoyens
+      allow read: if request.auth != null;
+
+      // Téléversement citoyen lors de la soumission de la demande :
+      // Limité à 5 Mo par fichier et formats PDF, JPG, PNG uniquement
+      allow write: if request.resource.size <= 5 * 1024 * 1024
+                   && (request.resource.contentType.matches('image/(jpeg|jpg|png)') 
+                       || request.resource.contentType == 'application/pdf');
+    }
+
+    // Règle de refus par défaut pour le reste du stockage
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
