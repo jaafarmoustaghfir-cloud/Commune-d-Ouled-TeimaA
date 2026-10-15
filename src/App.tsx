@@ -26,8 +26,29 @@ export default function App() {
   const [sessionErrorMsg, setSessionErrorMsg] = useState<string>('');
   const [initialAuthTab, setInitialAuthTab] = useState<'citizen' | 'employee' | 'admin'>('citizen');
 
+const DEFAULT_ANNOUNCEMENTS = [
+  {
+    id: 1,
+    titleAr: 'رقمنة خدمات الحالة المدنية بجماعة أولاد تايمة',
+    titleFr: "Digitalisation des services de l'état civil à Ouled Teima",
+    contentAr: 'تعلن جماعة أولاد تايمة عن إطلاق بوابتها الرقمية الجديدة لتسهيل طلب وسحب وثائق الحالة المدنية عن بعد دون عناء التنقل.',
+    contentFr: "La Commune d'Ouled Teima annonce le lancement de son nouveau portail numérique pour simplifier la demande et le retrait des actes d'état civil en ligne.",
+    category: 'service',
+    isPublished: true,
+  },
+  {
+    id: 2,
+    titleAr: 'شباك نموذجي لتسليم الشواهد والوثائق المصادق عليها',
+    titleFr: 'Guichet unique dédié pour le retrait des actes certifiés',
+    contentAr: 'تخصيص شباك خاص بمقر الجماعة لتسليم النسخ الموجزة والكاملة المنجزة إلكترونياً تفادياً للانتظار.',
+    contentFr: 'Mise en place d’un guichet dédié au siège de la commune pour le retrait rapide des extraits et copies intégrales préparés en ligne.',
+    category: 'horaires',
+    isPublished: true,
+  }
+];
+
   // announcements state
-  const [announcementsList, setAnnouncementsList] = useState<any[]>([]);
+  const [announcementsList, setAnnouncementsList] = useState<any[]>(DEFAULT_ANNOUNCEMENTS);
 
   // quick navigation to service form
   const [preselectedService, setPreselectedService] = useState<string>('');
@@ -161,14 +182,23 @@ export default function App() {
   }, []);
 
   const loadAnnouncements = async () => {
-    try {
-      const res = await fetch('/api/citizen/announcements');
-      if (res.ok) {
-        const data = await res.json();
-        setAnnouncementsList(data);
+    const endpoints = ['/api/public/announcements', '/api/citizen/announcements'];
+    for (const endpoint of endpoints) {
+      try {
+        const res = await fetch(endpoint);
+        if (res.ok) {
+          const contentType = res.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            const data = await res.json();
+            if (Array.isArray(data) && data.length > 0) {
+              setAnnouncementsList(data);
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`Could not load announcements from ${endpoint}`, e);
       }
-    } catch (e) {
-      console.error('Failed to load announcements', e);
     }
   };
 

@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { 
-  FileText, Upload, CheckCircle2, AlertCircle, Copy, Check, Download, 
-  ArrowRight, ArrowLeft, Shield, Paperclip, X, Eye, Clock, User
+  FileText, Upload, CheckCircle2, AlertCircle, AlertTriangle, Copy, Check, Download, 
+  ArrowRight, ArrowLeft, Shield, Paperclip, X, Eye, Clock, User, RefreshCw
 } from 'lucide-react';
 import { translations } from '../types.ts';
-import { createDemande, generateNumeroSuivi, DemandeModel } from '../services/demandesService.ts';
-import { validatePieceJustificative, uploadPieceJustificative, UploadedFileMeta } from '../services/storageService.ts';
+import { createDemande, generateNumeroSuivi, updateDemande, DemandeModel } from '../services/demandesService.ts';
+import { validatePieceJustificative, savePieceJustificativeFirestore } from '../services/piecesService.ts';
 import { generateReceiptPdf } from '../services/pdfService.ts';
 
 interface DemandeFormProps {
@@ -46,6 +46,15 @@ export default function DemandeForm({ lang, initialDocType, onGoToTrack, onCance
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [completedDemande, setCompletedDemande] = useState<DemandeModel | null>(null);
   const [copiedSuccess, setCopiedSuccess] = useState<boolean>(false);
+
+  // Background Upload Progress State
+  const [uploadProgress, setUploadProgress] = useState<{
+    currentFileName: string;
+    step: number;
+    total: number;
+  } | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle');
+  const [uploadWarning, setUploadWarning] = useState<string>('');
 
   // Validate Act number format e.g. "234/78" or "12/2020"
   const validateActNumber = (num: string) => {
@@ -131,91 +140,111 @@ export default function DemandeForm({ lang, initialDocType, onGoToTrack, onCance
 
     setIsSubmitting(true);
     const numeroSuivi = generateNumeroSuivi();
+    const hasFiles = Boolean(cinRectoFile || cinVersoFile || complementaryFiles.length > 0);
+
+    const demandeData: DemandeModel = {
+      id: numeroSuivi,
+      numeroSuivi,
+      cin: cin.trim().toUpperCase(),
+      nomComplet: nomComplet.trim(),
+      dateNaissance,
+      lieuNaissance: lieuNaissance.trim(),
+      communeEnregistrement: communeEnregistrement.trim(),
+      anneeEnregistrement: anneeEnregistrement.trim(),
+      numeroActe: numeroActe.trim(),
+      telephone: telephone.trim(),
+      email: email.trim() || undefined,
+      adresse: adresse.trim(),
+      typeDocument: docType,
+      nombreCopies: Number(numberOfCopies) || 1,
+      statut: 'Nouvelle',
+      piecesStatut: hasFiles ? 'en_cours' : 'aucune',
+      notesInternes: '',
+      notesCitoyen: '',
+      dateRetrait: '',
+      createdAt: new Date().toISOString(),
+    };
 
     try {
-      const uploadedAttachments: UploadedFileMeta[] = [];
-      let cinRectoUrl = '';
-      let cinVersoUrl = '';
-
-      // Upload CIN Recto if provided
-      if (cinRectoFile) {
-        setUploadStepMsg(
-          lang === 'ar' 
-            ? 'جاري رفع صورة الوجه الأمامي للبطاقة الوطنية...' 
-            : 'Téléversement du recto de la CIN...'
-        );
-        const meta = await uploadPieceJustificative(numeroSuivi, cinRectoFile, 'cin_recto');
-        uploadedAttachments.push(meta);
-        cinRectoUrl = meta.url;
-      }
-
-      // Upload CIN Verso if provided
-      if (cinVersoFile) {
-        setUploadStepMsg(
-          lang === 'ar' 
-            ? 'جاري رفع صورة الوجه الخلفي للبطاقة الوطنية...' 
-            : 'Téléversement du verso de la CIN...'
-        );
-        const meta = await uploadPieceJustificative(numeroSuivi, cinVersoFile, 'cin_verso');
-        uploadedAttachments.push(meta);
-        cinVersoUrl = meta.url;
-      }
-
-      // Upload Complementary files
-      for (let i = 0; i < complementaryFiles.length; i++) {
-        const file = complementaryFiles[i];
-        setUploadStepMsg(
-          lang === 'ar' 
-            ? `جاري رفع الوثيقة المرفقة (${i + 1}/${complementaryFiles.length})...` 
-            : `Téléversement du document complémentaire (${i + 1}/${complementaryFiles.length})...`
-        );
-        const meta = await uploadPieceJustificative(numeroSuivi, file, 'complementaire');
-        uploadedAttachments.push(meta);
-      }
-
-      // Enregistrement dans Firestore (collection "demandes")
+      // 1. ORDRE STRICT : Enregistrement D'ABORD dans Firestore sans attendre les pièces
       setUploadStepMsg(
-        lang === 'ar' ? 'جاري تسجيل الطلب وتوليد وصل الإيداع...' : 'Enregistrement de la demande dans la base de données...'
+        lang === 'ar' ? 'جاري تسجيل الطلب وتوليد رقم التتبع...' : 'Enregistrement de la demande...'
       );
-
-      const demandeData: DemandeModel = {
-        id: numeroSuivi,
-        numeroSuivi,
-        cin: cin.trim().toUpperCase(),
-        nomComplet: nomComplet.trim(),
-        dateNaissance,
-        lieuNaissance: lieuNaissance.trim(),
-        communeEnregistrement: communeEnregistrement.trim(),
-        anneeEnregistrement: anneeEnregistrement.trim(),
-        numeroActe: numeroActe.trim(),
-        telephone: telephone.trim(),
-        email: email.trim() || undefined,
-        adresse: adresse.trim(),
-        typeDocument: docType,
-        nombreCopies: Number(numberOfCopies) || 1,
-        statut: 'Nouvelle',
-        cinRectoUrl,
-        cinVersoUrl,
-        piecesJointes: uploadedAttachments,
-        notesInternes: '',
-        notesCitoyen: '',
-        dateRetrait: '',
-        createdAt: new Date().toISOString(),
-      };
-
       await createDemande(demandeData);
+
+      // Immédiatement afficher l'écran de confirmation avec le numéro de suivi
       setCompletedDemande(demandeData);
+      setIsSubmitting(false);
+
+      // 2. Téléversement des pièces en arrière-plan sans bloquer
+      if (hasFiles) {
+        startBackgroundUpload(numeroSuivi);
+      }
     } catch (err: any) {
-      console.error('Erreur soumission demande:', err);
+      console.error('Erreur enregistrement demande Firestore:', err);
+      setIsSubmitting(false);
       setErrorMessage(
-        err.message || 
-        (lang === 'ar' 
-          ? 'تعذر إرسال الطلب. يرجى التحقق من الاتصال بالإنترنت والمحاولة مجدداً.' 
-          : 'Impossible d\'envoyer la demande. Veuillez vérifier votre connexion et réessayer.')
+        lang === 'ar' 
+          ? 'تعذر تسجيل الطلب في قاعدة البيانات. يرجى التحقق من الاتصال بالإنترنت والمحاولة مجدداً.' 
+          : 'Impossible d\'enregistrer la demande. Veuillez vérifier votre connexion et réessayer.'
       );
     } finally {
       setIsSubmitting(false);
       setUploadStepMsg('');
+    }
+  };
+
+  // Upload des pièces en arrière-plan avec barre de progression et timeout
+  const startBackgroundUpload = async (numSuivi: string) => {
+    const queue: Array<{ file: File; category: 'cin_recto' | 'cin_verso' | 'complementaire' }> = [];
+    if (cinRectoFile) queue.push({ file: cinRectoFile, category: 'cin_recto' });
+    if (cinVersoFile) queue.push({ file: cinVersoFile, category: 'cin_verso' });
+    complementaryFiles.forEach((file) => queue.push({ file, category: 'complementaire' }));
+
+    if (queue.length === 0) {
+      setUploadStatus('idle');
+      return;
+    }
+
+    setUploadStatus('uploading');
+    setUploadWarning('');
+    let failedCount = 0;
+
+    for (let i = 0; i < queue.length; i++) {
+      const item = queue[i];
+      setUploadProgress({
+        currentFileName: item.file.name,
+        step: i + 1,
+        total: queue.length,
+      });
+
+      try {
+        await savePieceJustificativeFirestore(numSuivi, item.file, item.category);
+      } catch (err: any) {
+        console.error(`Erreur upload pièce (${item.file.name}):`, err?.code || err?.message || err);
+        failedCount++;
+      }
+    }
+
+    if (failedCount > 0) {
+      setUploadStatus('error');
+      setUploadWarning(
+        lang === 'ar'
+          ? 'تم تسجيل طلبك بنجاح وحفظ رقم التتبع الخاص بك، لكن تعذر إرسال بعض الوثائق عبر النظام. يرجى التوجه إلى شباك الحالة المدنية مع أصول الوثائق لتسوية ملفك.'
+          : 'Demande enregistrée avec le numéro de suivi ci-dessus, mais l\'envoi des pièces a échoué. Présentez-vous avec vos originaux physiques au guichet.'
+      );
+      try {
+        await updateDemande(numSuivi, { piecesStatut: 'echec' });
+      } catch (e) {
+        console.warn('Could not update piecesStatut', e);
+      }
+    } else {
+      setUploadStatus('success');
+      try {
+        await updateDemande(numSuivi, { piecesStatut: 'succes' });
+      } catch (e) {
+        console.warn('Could not update piecesStatut', e);
+      }
     }
   };
 
@@ -268,6 +297,71 @@ export default function DemandeForm({ lang, initialDocType, onGoToTrack, onCance
             </p>
           )}
         </div>
+
+        {/* Upload Status Widget during and after background upload */}
+        {uploadStatus === 'uploading' && uploadProgress && (
+          <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-2xl max-w-md mx-auto text-start">
+            <div className="flex items-center gap-3">
+              <RefreshCw className="w-5 h-5 text-[#005BAC] dark:text-blue-400 animate-spin shrink-0" />
+              <div className="flex-1">
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-xs font-bold text-slate-900 dark:text-white">
+                    {lang === 'ar' ? 'جاري رفع الوثائق المرفقة...' : 'Téléversement des pièces en cours...'}
+                  </span>
+                  <span className="text-[11px] font-mono font-bold text-[#005BAC] dark:text-blue-400">
+                    {uploadProgress.step} / {uploadProgress.total}
+                  </span>
+                </div>
+                <div className="w-full bg-slate-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden mb-1.5">
+                  <div 
+                    className="bg-[#005BAC] h-full rounded-full transition-all duration-300"
+                    style={{ width: `${Math.round((uploadProgress.step / uploadProgress.total) * 100)}%` }}
+                  />
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {uploadProgress.currentFileName}
+                </p>
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 font-medium">
+                  {lang === 'ar' ? 'المرجو عدم إغلاق هذه الصفحة حتى اكتمال الرفع' : 'Merci de ne pas fermer cette page pendant le téléversement'}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {uploadStatus === 'success' && (
+          <div className="mt-6 p-3.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl max-w-md mx-auto flex items-center gap-2.5 text-xs text-emerald-800 dark:text-emerald-300">
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <span className="font-semibold">
+              {lang === 'ar' 
+                ? 'تم رفع جميع الوثائق المرفقة بنجاح وحفظها في ملفكم.' 
+                : 'Toutes les pièces justificatives ont été téléversées avec succès.'}
+            </span>
+          </div>
+        )}
+
+        {uploadStatus === 'error' && (
+          <div className="mt-6 p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-2xl max-w-md mx-auto text-start">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <div className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
+                <span className="font-bold block mb-1">
+                  {lang === 'ar' ? 'تنبيه بشأن الوثائق المرفقة :' : 'Information sur les pièces jointes :'}
+                </span>
+                <span>{uploadWarning}</span>
+                <div className="mt-3">
+                  <button
+                    onClick={() => startBackgroundUpload(completedDemande.numeroSuivi)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all shadow-sm"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>{lang === 'ar' ? 'إعادة محاولة الرفع' : 'Réessayer l\'envoi'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Download Receipt and Track Actions */}
         <div className="mt-8 flex flex-col sm:flex-row gap-4 justify-center items-center">

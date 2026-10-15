@@ -60,12 +60,28 @@ service cloud.firestore {
       // Lecture de la liste complète réservée aux employés municipaux authentifiés
       allow list: if isSignedIn();
 
-      // Modification et suppression réservées aux employés municipaux authentifiés
-      allow update: if isSignedIn() 
-                    && isValidId(demandeId)
-                    && incoming().numeroSuivi == existing().numeroSuivi;
+      // Modification réservée aux employés municipaux authentifiés,
+      // ou mise à jour du statut des pièces lors du dépôt citoyen
+      allow update: if (isSignedIn() && isValidId(demandeId) && incoming().numeroSuivi == existing().numeroSuivi)
+                    || (isValidId(demandeId) 
+                        && incoming().numeroSuivi == existing().numeroSuivi
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['cinRectoUrl', 'cinVersoUrl', 'piecesJointes', 'piecesStatut', 'piecesResume', 'updatedAt']));
 
+      // Suppression réservée aux employés municipaux authentifiés
       allow delete: if isSignedIn() && isValidId(demandeId);
+
+      // Sous-collection des pièces justificatives
+      match /pieces/{pieceId} {
+        // Création ouverte au citoyen lors du dépôt
+        allow create: if isValidId(pieceId)
+                      && incoming().categorie in ['cin_recto', 'cin_verso', 'complementaire']
+                      && incoming().statut == 'en_attente'
+                      && incoming().dataUrl is string
+                      && incoming().dataUrl.size() <= 900000;
+
+        // Lecture, vérification et suppression réservées aux agents municipaux connectés
+        allow get, list, update, delete: if isSignedIn();
+      }
     }
 
     // Collection de test de connectivité

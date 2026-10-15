@@ -37,6 +37,15 @@ export interface DemandeModel {
   typeDocument: string;
   nombreCopies: number;
   statut: StatutDemande;
+  piecesStatut?: 'succes' | 'echec' | 'en_cours' | 'aucune';
+  piecesResume?: Array<{
+    id: string;
+    categorie: 'cin_recto' | 'cin_verso' | 'complementaire';
+    nom: string;
+    type: string;
+    statut: 'en_attente' | 'validee' | 'refusee';
+    motifRefus?: string;
+  }>;
   cinRectoUrl?: string;
   cinVersoUrl?: string;
   piecesJointes?: UploadedFileMeta[];
