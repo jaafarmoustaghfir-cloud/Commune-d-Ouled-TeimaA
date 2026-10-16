@@ -1048,10 +1048,16 @@ async function startServer() {
           msgAr = `تمت الموافقة على طلبك رقم ${requestObj.requestNumber}. العمل جار على إعداد الوثيقة الرسمية.`;
           msgFr = `Votre demande N° ${requestObj.requestNumber} a été approuvée. La préparation du document officiel est en cours.`;
         } else if (status === 'ready_for_pickup') {
-          titleAr = 'الوثيقة جاهزة للاستلام';
-          titleFr = 'Document prêt pour retrait';
-          msgAr = `الوثيقة الخاصة بطلبك رقم ${requestObj.requestNumber} جاهزة للاستلام. يرجى زيارة مقر الجماعة مصحوبا ببطاقتك الوطنية.`;
-          msgFr = `Le document pour votre demande N° ${requestObj.requestNumber} est prêt. Veuillez vous présenter à la commune muni de votre CIN.`;
+          titleAr = 'الوثيقة جاهزة للاستلام والتحميل';
+          titleFr = 'Document prêt pour retrait ou téléchargement';
+          const hasFinalDoc = Boolean(requestObj.pdfUrl);
+          if (hasFinalDoc) {
+            msgAr = `الوثيقة الخاصة بطلبك رقم ${requestObj.requestNumber} جاهزة. يمكنك الآن تحميل نسختك الرسمية مباشرة من صفحة التتبع عبر البوابة الإلكترونية دون عناء التنقل، أو سحبها من مقر الجماعة مصحوبا ببطاقتك الوطنية.`;
+            msgFr = `Le document pour votre demande N° ${requestObj.requestNumber} est prêt. Vous pouvez le télécharger directement depuis la page de suivi sans vous déplacer, ou le retirer au guichet communal muni de votre CIN.`;
+          } else {
+            msgAr = `الوثيقة الخاصة بطلبك رقم ${requestObj.requestNumber} جاهزة للاستلام بمقر الجماعة. يرجى زيارة الشباك النموذجي مصحوبا ببطاقتك الوطنية ووصل الإيداع.`;
+            msgFr = `Le document pour votre demande N° ${requestObj.requestNumber} est prêt pour retrait. Veuillez vous présenter à la commune muni de votre CIN et de votre récépissé.`;
+          }
         } else if (status === 'delivered') {
           titleAr = 'تم تسليم الوثيقة';
           titleFr = 'Document délivré';

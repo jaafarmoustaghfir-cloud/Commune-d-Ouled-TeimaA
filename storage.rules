@@ -2,20 +2,42 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
 
-    // Pièces justificatives des demandes d'état civil (demandes/{numeroSuivi}/...)
-    match /demandes/{numeroSuivi}/{allPaths=**} {
-      // Lecture strictement réservée aux fonctionnaires et agents authentifiés
-      // pour garantir la confidentialité totale des pièces d'identité et justificatifs des citoyens
-      allow read: if request.auth != null;
-
-      // Téléversement citoyen lors de la soumission de la demande :
-      // Limité à 5 Mo par fichier et formats PDF, JPG, PNG uniquement
-      allow write: if request.resource.size <= 5 * 1024 * 1024
-                   && (request.resource.contentType.matches('image/(jpeg|jpg|png)') 
-                       || request.resource.contentType == 'application/pdf');
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
     }
 
-    // Règle de refus par défaut pour le reste du stockage
+    function isUnderMaxSize(maxMegabytes) {
+      return request.resource.size <= maxMegabytes * 1024 * 1024;
+    }
+
+    function isValidImageOrPdf() {
+      return request.resource.contentType.matches('image/.*') ||
+             request.resource.contentType == 'application/pdf';
+    }
+
+    // 1. Documents officiels finaux (générés et téléversés exclusivement par les agents municipaux)
+    // Chemin: demandes/{numeroSuivi}/final_{fileName}
+    match /demandes/{numeroSuivi}/{fileName} {
+      // Seuls les employés municipaux authentifiés peuvent téléverser, remplacer ou supprimer le document final
+      allow write, delete: if isSignedIn()
+                           && isUnderMaxSize(5)
+                           && isValidImageOrPdf();
+
+      // Lecture réservée aux employés municipaux authentifiés
+      // (Les citoyens accèdent au document de manière sécurisée après validation du CIN + numéro de suivi)
+      allow read: if isSignedIn();
+    }
+
+    // 2. Pièces justificatives citoyennes (CIN recto/verso, documents complémentaires)
+    match /demandes/{numeroSuivi}/pieces/{pieceFile} {
+      // Dépôt ouvert avec contrôle de taille (max 5 Mo)
+      allow write: if isUnderMaxSize(5) && isValidImageOrPdf();
+      // Lecture et gestion réservées aux employés municipaux pour préserver la vie privée des citoyens
+      allow read, delete: if isSignedIn();
+    }
+
+    // Refus par défaut de tout autre accès non spécifié
     match /{allPaths=**} {
       allow read, write: if false;
     }

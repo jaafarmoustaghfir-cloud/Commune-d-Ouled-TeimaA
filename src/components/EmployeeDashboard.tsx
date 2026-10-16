@@ -5,11 +5,11 @@ import {
   FileText, Search, CheckCircle, XCircle, AlertCircle, AlertTriangle, Eye, Printer, 
   Calendar, Download, RefreshCw, Filter, Layers, Clock, ShieldCheck, 
   User, MapPin, Phone, Mail, FileDown, Check, ExternalLink, X, Paperclip, ChevronRight,
-  ZoomIn, Maximize2, CheckCircle2
+  ZoomIn, Maximize2, CheckCircle2, UploadCloud, Trash2, Share2, MessageCircle, FileCheck, History, Info
 } from 'lucide-react';
 import { 
   DemandeModel, StatutDemande, subscribeDemandes, updateDemande, 
-  formatDemandeDate 
+  formatDemandeDate, normalizeMoroccanPhone, StatutHistoryEntry 
 } from '../services/demandesService.ts';
 import { 
   getPiecesForDemande, 
@@ -17,6 +17,11 @@ import {
   PieceModel, 
   PieceResume 
 } from '../services/piecesService.ts';
+import { 
+  uploadFinalDocumentWithRetry, 
+  deleteFinalDocument, 
+  validateFinalDocumentFile 
+} from '../services/finalDocumentService.ts';
 import { generateReceiptPdf, generateOfficialCivilDocumentPdf } from '../services/pdfService.ts';
 
 interface EmployeeDashboardProps {
@@ -49,6 +54,15 @@ export default function EmployeeDashboard({ lang, user }: EmployeeDashboardProps
   const [editDateRetrait, setEditDateRetrait] = useState<string>('');
   const [isUpdating, setIsUpdating] = useState<boolean>(false);
   const [updateSuccessMsg, setUpdateSuccessMsg] = useState<string>('');
+
+  // Final Document Upload & Actions State
+  const [isUploadingFinalDoc, setIsUploadingFinalDoc] = useState<boolean>(false);
+  const [finalDocProgress, setFinalDocProgress] = useState<number>(0);
+  const [finalDocError, setFinalDocError] = useState<string>('');
+  const [finalDocSuccess, setFinalDocSuccess] = useState<string>('');
+  const [whatsAppSuccessMsg, setWhatsAppSuccessMsg] = useState<string>('');
+  const finalDocInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [showHistory, setShowHistory] = useState<boolean>(false);
 
   // Pieces from subcollection for the selected demand
   const [piecesList, setPiecesList] = useState<PieceModel[]>([]);
@@ -392,19 +406,237 @@ export default function EmployeeDashboard({ lang, user }: EmployeeDashboardProps
     XLSX.writeFile(workbook, fileName);
   };
 
-  // Save changes to selected Demande
+  // Téléversement ou remplacement du document final par l'employé avec retry et timeout
+  const handleFinalDocFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!selectedDemande) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const file = files[0];
+
+    const validation = validateFinalDocumentFile(file, lang);
+    if (!validation.valid) {
+      setFinalDocError(validation.error || '');
+      if (finalDocInputRef.current) finalDocInputRef.current.value = '';
+      return;
+    }
+
+    setIsUploadingFinalDoc(true);
+    setFinalDocError('');
+    setFinalDocSuccess('');
+    setFinalDocProgress(15);
+
+    const agentEmail = user?.email || 'agent@ouledteima.ma';
+
+    try {
+      const finalMeta = await uploadFinalDocumentWithRetry(
+        selectedDemande,
+        file,
+        agentEmail,
+        (percent) => setFinalDocProgress(percent)
+      );
+
+      setFinalDocSuccess(
+        lang === 'ar'
+          ? 'تم إرسال الوثيقة الرسمية بنجاح إلى ملف الطلب.'
+          : 'Document officiel envoyé avec succès.'
+      );
+
+      setSelectedDemande((prev) =>
+        prev
+          ? {
+              ...prev,
+              documentFinal: finalMeta,
+              historiqueStatuts: [
+                ...(prev.historiqueStatuts || []),
+                {
+                  action: prev.documentFinal ? 'remplacement_document_final' : 'upload_document_final',
+                  statut: prev.statut,
+                  date: new Date().toISOString(),
+                  employe: agentEmail,
+                  motif: `Document final: "${file.name}" (${(file.size / 1024).toFixed(0)} Ko)`,
+                },
+              ],
+            }
+          : null
+      );
+
+      setTimeout(() => setFinalDocSuccess(''), 5000);
+    } catch (err: any) {
+      console.error('Erreur upload document final:', err);
+      setFinalDocError(
+        err?.message ||
+        (lang === 'ar'
+          ? 'تعذر رفع الوثيقة بعد 3 محاولات. يرجى التحقق من اتصالك والمحاولة مجدداً.'
+          : 'Échec du téléversement du document final. Veuillez réessayer.')
+      );
+    } finally {
+      setIsUploadingFinalDoc(false);
+      if (finalDocInputRef.current) finalDocInputRef.current.value = '';
+    }
+  };
+
+  // Suppression du document final avec traçabilité
+  const handleDeleteFinalDoc = async () => {
+    if (!selectedDemande || !selectedDemande.documentFinal) return;
+
+    const confirmMsg =
+      lang === 'ar'
+        ? 'هل أنت متأكد من حذف الوثيقة النهائية المرفقة بهذا الطلب؟'
+        : 'Êtes-vous sûr de vouloir supprimer le document final de cette demande ?';
+
+    if (!window.confirm(confirmMsg)) return;
+
+    const agentEmail = user?.email || 'agent@ouledteima.ma';
+
+    try {
+      await deleteFinalDocument(selectedDemande, agentEmail);
+      setSelectedDemande((prev) =>
+        prev
+          ? {
+              ...prev,
+              documentFinal: null,
+              historiqueStatuts: [
+                ...(prev.historiqueStatuts || []),
+                {
+                  action: 'suppression_document_final',
+                  statut: prev.statut,
+                  date: new Date().toISOString(),
+                  employe: agentEmail,
+                  motif: `Suppression de la pièce finale`,
+                },
+              ],
+            }
+          : null
+      );
+    } catch (err: any) {
+      console.error('Erreur suppression document final:', err);
+      alert(err?.message || 'Erreur lors de la suppression.');
+    }
+  };
+
+  // Envoi WhatsApp avec lien de suivi sécurisé sans données personnelles
+  const handleSendWhatsApp = async () => {
+    if (!selectedDemande) return;
+
+    const phoneInfo = normalizeMoroccanPhone(selectedDemande.telephone);
+    if (!phoneInfo.valid) return;
+
+    const agentEmail = user?.email || 'agent@ouledteima.ma';
+    const trackingUrl = `${window.location.origin}/?tab=track&ref=${encodeURIComponent(selectedDemande.numeroSuivi)}`;
+
+    const textAr = `السلام عليكم، وثيقتكم الإدارية (طلب رقم ${selectedDemande.numeroSuivi}) جاهزة. يمكنكم تحميلها من بوابة التتبع الرسمية عبر الرابط: ${trackingUrl}. جماعة أولاد تايمة.`;
+    const textFr = `Bonjour, votre document (demande N° ${selectedDemande.numeroSuivi}) est prêt. Vous pouvez le télécharger ici : ${trackingUrl}. Commune d'Ouled Teima.`;
+
+    const message = lang === 'fr' ? textFr : textAr;
+
+    // Journalisation du clic dans l'historique administratif
+    try {
+      const historyEntry: StatutHistoryEntry = {
+        action: 'notification_whatsapp_ouverte',
+        statut: selectedDemande.statut,
+        date: new Date().toISOString(),
+        employe: agentEmail,
+        motif: `Notification WhatsApp ouverte (+${phoneInfo.normalized})`,
+      };
+      const updatedHistory = [...(selectedDemande.historiqueStatuts || []), historyEntry];
+      await updateDemande(selectedDemande.numeroSuivi, {
+        historiqueStatuts: updatedHistory,
+      });
+      setSelectedDemande((prev) => (prev ? { ...prev, historiqueStatuts: updatedHistory } : null));
+    } catch (e) {
+      console.warn('Erreur journalisation historique WhatsApp:', e);
+    }
+
+    const waUrl = `https://wa.me/${phoneInfo.normalized}?text=${encodeURIComponent(message)}`;
+    window.open(waUrl, '_blank', 'noopener,noreferrer');
+
+    setWhatsAppSuccessMsg(
+      lang === 'ar' ? 'تم فتح محادثة واتساب وتسجيل الإجراء في السجل الإداري.' : 'Notification WhatsApp ouverte et journalisée avec succès.'
+    );
+    setTimeout(() => setWhatsAppSuccessMsg(''), 4000);
+  };
+
+  // Partage direct du fichier via Web Share API sur smartphone
+  const handleShareFinalDoc = async () => {
+    if (!selectedDemande || !selectedDemande.documentFinal) return;
+    const doc = selectedDemande.documentFinal;
+    const agentEmail = user?.email || 'agent@ouledteima.ma';
+
+    try {
+      let fileToShare: File | null = null;
+      const downloadTarget = doc.dataUrl || doc.url;
+      if (downloadTarget) {
+        const res = await fetch(downloadTarget);
+        const blob = await res.blob();
+        fileToShare = new File([blob], doc.name, { type: doc.type || 'application/pdf' });
+      }
+
+      if (fileToShare && typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [fileToShare] })) {
+        await navigator.share({
+          title: `Document ${selectedDemande.numeroSuivi}`,
+          text: `Document officiel - Demande N° ${selectedDemande.numeroSuivi} - Commune d'Ouled Teima`,
+          files: [fileToShare],
+        });
+
+        const historyEntry: StatutHistoryEntry = {
+          action: 'partage_fichier_whatsapp',
+          statut: selectedDemande.statut,
+          date: new Date().toISOString(),
+          employe: agentEmail,
+          motif: `Partage direct du fichier "${doc.name}" via Web Share API`,
+        };
+        const updatedHistory = [...(selectedDemande.historiqueStatuts || []), historyEntry];
+        await updateDemande(selectedDemande.numeroSuivi, { historiqueStatuts: updatedHistory });
+        setSelectedDemande((prev) => (prev ? { ...prev, historiqueStatuts: updatedHistory } : null));
+      } else {
+        alert(lang === 'ar' ? 'ميزة مشاركة الملفات غير مدعومة في هذا المتصفح.' : 'Le partage direct de fichiers n\'est pas supporté par ce navigateur.');
+      }
+    } catch (err) {
+      console.warn('Share notice:', err);
+    }
+  };
+
+  // Save changes to selected Demande with audit logging
   const handleSaveDemandeChanges = async () => {
     if (!selectedDemande) return;
     setIsUpdating(true);
     setUpdateSuccessMsg('');
 
+    const agentEmail = user?.email || 'agent@ouledteima.ma';
+    const isStatusChanged = editStatus !== selectedDemande.statut;
+
     try {
+      const updatedHistory = [...(selectedDemande.historiqueStatuts || [])];
+      if (isStatusChanged) {
+        updatedHistory.push({
+          action: 'changement_statut',
+          statut: editStatus,
+          date: new Date().toISOString(),
+          employe: agentEmail,
+          motif: `Statut modifié de "${selectedDemande.statut}" à "${editStatus}"${editDateRetrait ? ` (Retrait: ${editDateRetrait})` : ''}`,
+        });
+      }
+
       await updateDemande(selectedDemande.numeroSuivi, {
         statut: editStatus,
         notesInternes: editNotesInternes,
         notesCitoyen: editNotesCitoyen,
         dateRetrait: editDateRetrait,
+        historiqueStatuts: updatedHistory,
       });
+
+      setSelectedDemande((prev) =>
+        prev
+          ? {
+              ...prev,
+              statut: editStatus,
+              notesInternes: editNotesInternes,
+              notesCitoyen: editNotesCitoyen,
+              dateRetrait: editDateRetrait,
+              historiqueStatuts: updatedHistory,
+            }
+          : null
+      );
 
       setUpdateSuccessMsg(
         lang === 'ar' ? 'تم تحديث بيانات الطلب بنجاح في قاعدة البيانات.' : 'Demande mise à jour avec succès dans Firestore.'
@@ -1021,16 +1253,283 @@ export default function EmployeeDashboard({ lang, user }: EmployeeDashboardProps
 
                 </div>
 
-                <div className="flex justify-end">
+                {/* Warning if "Prêt pour retrait" without attached final document */}
+                {editStatus === 'Prêt pour retrait' && !selectedDemande.documentFinal && (
+                  <div className="mb-4 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200 flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold block mb-0.5">
+                        {lang === 'ar' ? 'تنبيه: لم يتم إرفاق الوثيقة النهائية' : 'Attention : Aucun document final n\'est encore joint'}
+                      </span>
+                      <span>
+                        {lang === 'ar'
+                          ? 'تم اختيار الحالة "جاهز للاستلام" دون إرفاق ملف الوثيقة الرقمية. يمكن حفظ التعديل بشكل عادي، وسيتعين على المواطن الحضور شخصياً لسحب نسخته الورقية من شباك الجماعة.'
+                          : 'Le statut "Prêt pour retrait" a été sélectionné sans document final. L\'enregistrement reste possible, et le citoyen devra se présenter au guichet pour retirer son document physique.'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Section : Joindre le document final / إرفاق الوثيقة النهائية */}
+                <div className="my-5 p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <FileCheck className="w-5 h-5 text-[#005BAC] dark:text-blue-400" />
+                      <h4 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
+                        {lang === 'ar' ? 'إرفاق الوثيقة النهائية الموقعة' : 'Joindre le document final'}
+                      </h4>
+                    </div>
+                    <span className="text-[11px] text-slate-500">
+                      {lang === 'ar' ? 'صيغ PDF أو JPG أو PNG (حد أقصى 5 ميغابايت)' : 'PDF, JPG ou PNG (max 5 Mo)'}
+                    </span>
+                  </div>
+
+                  {/* Hidden file input */}
+                  <input
+                    type="file"
+                    ref={finalDocInputRef}
+                    onChange={handleFinalDocFileChange}
+                    accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                    className="hidden"
+                  />
+
+                  {/* Upload Progress Indicator */}
+                  {isUploadingFinalDoc && (
+                    <div className="p-3 mb-3 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 rounded-xl">
+                      <div className="flex items-center justify-between text-xs font-bold text-[#005BAC] dark:text-blue-300 mb-1.5">
+                        <span className="flex items-center gap-1.5">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          {lang === 'ar' ? 'جاري رفع الوثيقة النهائية بالخلفية...' : 'Téléversement en arrière-plan...'}
+                        </span>
+                        <span className="font-mono">{finalDocProgress}%</span>
+                      </div>
+                      <div className="w-full bg-slate-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                        <div
+                          className="bg-[#005BAC] h-full rounded-full transition-all duration-300"
+                          style={{ width: `${finalDocProgress}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* If final document is attached */}
+                  {selectedDemande.documentFinal ? (
+                    <div className="p-3.5 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 rounded-lg bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">
+                          <FileText className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-xs font-bold text-slate-900 dark:text-white truncate max-w-[220px]" title={selectedDemande.documentFinal.name}>
+                              {selectedDemande.documentFinal.name}
+                            </span>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300">
+                              <Check className="w-3 h-3" />
+                              {lang === 'ar' ? 'تم إرسال الوثيقة' : 'Document envoyé'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {(selectedDemande.documentFinal.size / 1024).toFixed(0)} Ko • {formatDemandeDate(selectedDemande.documentFinal.uploadedAt, lang)} {selectedDemande.documentFinal.uploadedBy ? `(${selectedDemande.documentFinal.uploadedBy})` : ''}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 self-end sm:self-center">
+                        <a
+                          href={selectedDemande.documentFinal.dataUrl || selectedDemande.documentFinal.url}
+                          download={selectedDemande.documentFinal.name}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs flex items-center gap-1.5 transition-all"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>{lang === 'ar' ? 'معاينة' : 'Voir'}</span>
+                        </a>
+
+                        <button
+                          type="button"
+                          disabled={isUploadingFinalDoc}
+                          onClick={() => finalDocInputRef.current?.click()}
+                          className="px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 dark:hover:bg-blue-900/60 border border-blue-200 dark:border-blue-800 text-[#005BAC] dark:text-blue-400 font-bold text-xs flex items-center gap-1.5 transition-all"
+                        >
+                          <UploadCloud className="w-3.5 h-3.5" />
+                          <span>{lang === 'ar' ? 'استبدال' : 'Remplacer'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={isUploadingFinalDoc}
+                          onClick={handleDeleteFinalDoc}
+                          className="px-3 py-1.5 rounded-lg bg-red-50 dark:bg-red-950/50 hover:bg-red-100 dark:hover:bg-red-900/60 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 font-bold text-xs flex items-center gap-1.5 transition-all"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>{lang === 'ar' ? 'حذف' : 'Supprimer'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <button
+                        type="button"
+                        disabled={isUploadingFinalDoc}
+                        onClick={() => finalDocInputRef.current?.click()}
+                        className="w-full py-4 border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-[#005BAC] dark:hover:border-blue-400 rounded-xl flex flex-col items-center justify-center gap-1 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-all cursor-pointer"
+                      >
+                        <UploadCloud className="w-6 h-6 text-[#005BAC] dark:text-blue-400" />
+                        <span className="text-xs font-bold">
+                          {lang === 'ar' ? 'إرفاق الوثيقة الرسمية النهائية (PDF أو صورة)' : 'Joindre le document officiel final (PDF ou image)'}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {lang === 'ar' ? 'انقر لاختيار الملف من جهازك (حد أقصى 5 ميغابايت)' : 'Cliquez pour sélectionner le fichier (max 5 Mo)'}
+                        </span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Feedback Messages */}
+                  {finalDocSuccess && (
+                    <div className="mt-3 p-2.5 rounded-lg bg-emerald-100/70 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 text-xs font-semibold flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                      <span>{finalDocSuccess}</span>
+                    </div>
+                  )}
+
+                  {finalDocError && (
+                    <div className="mt-3 p-2.5 rounded-lg bg-red-100/70 dark:bg-red-950/50 text-red-800 dark:text-red-300 text-xs flex items-start gap-1.5">
+                      <AlertCircle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
+                      <div className="flex-1">
+                        <span className="block font-bold mb-0.5">{lang === 'ar' ? 'تنبيه خطأ :' : 'Erreur de téléversement :'}</span>
+                        <span>{finalDocError}</span>
+                        <button
+                          type="button"
+                          onClick={() => finalDocInputRef.current?.click()}
+                          className="mt-1.5 block text-xs underline font-bold"
+                        >
+                          {lang === 'ar' ? 'إعادة المحاولة' : 'Réessayer'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowHistory(!showHistory)}
+                    className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 dark:text-slate-400 hover:text-[#005BAC] transition-colors"
+                  >
+                    <History className="w-4 h-4" />
+                    <span>{lang === 'ar' ? 'سجل العمليات والقرارات الإدارية' : 'Historique des décisions'}</span>
+                    <span className="text-[10px] px-1.5 py-0.2 bg-slate-200 dark:bg-slate-700 rounded-full font-mono">
+                      {selectedDemande.historiqueStatuts?.length || 0}
+                    </span>
+                  </button>
+
                   <button
                     onClick={handleSaveDemandeChanges}
                     disabled={isUpdating}
-                    className="inline-flex items-center gap-2 px-6 py-2.5 bg-[#005BAC] hover:bg-[#004b91] text-white font-bold rounded-xl text-xs sm:text-sm shadow-md transition-all disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-2 px-6 py-2.5 bg-[#005BAC] hover:bg-[#004b91] text-white font-bold rounded-xl text-xs sm:text-sm shadow-md transition-all disabled:opacity-50"
                   >
                     {isUpdating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
                     <span>{lang === 'ar' ? 'حفظ التعديلات في النظام' : 'Enregistrer les modifications'}</span>
                   </button>
                 </div>
+
+                {/* Section WhatsApp (Visible si document final joint et statut Prêt pour retrait ou Délivré) */}
+                {selectedDemande.documentFinal && (selectedDemande.statut === 'Prêt pour retrait' || selectedDemande.statut === 'Délivré') && (
+                  <div className="mt-5 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-300 dark:border-emerald-800/80">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300 font-bold text-xs sm:text-sm mb-1">
+                          <MessageCircle className="w-4 h-4 text-emerald-600" />
+                          <span>{lang === 'ar' ? 'إشعار المواطن عبر تطبيق واتساب (بناءً على طلبه)' : 'Notification citoyenne via WhatsApp'}</span>
+                        </div>
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                          {lang === 'ar'
+                            ? 'يرسل الرابط الرسمي لصفحة التتبع فقط دون أي معطيات شخصية. يشترط إدخال رقم البطاقة الوطنية للتحميل.'
+                            : 'Envoie le lien officiel de la page de suivi sans aucune donnée personnelle. Le citoyen devra saisir son CIN.'}
+                        </p>
+                      </div>
+
+                      {(() => {
+                        const phoneInfo = normalizeMoroccanPhone(selectedDemande.telephone);
+                        if (!phoneInfo.valid) {
+                          return (
+                            <span className="text-xs text-amber-700 dark:text-amber-400 font-semibold italic bg-amber-100/60 px-3 py-1.5 rounded-lg border border-amber-200">
+                              {lang === 'ar' ? 'رقم الهاتف غير مسجل أو غير صالح للواتساب' : 'Numéro de téléphone non valide pour WhatsApp'}
+                            </span>
+                          );
+                        }
+
+                        const canShareFile = typeof navigator !== 'undefined' && typeof navigator.share === 'function' && typeof navigator.canShare === 'function';
+
+                        return (
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={handleSendWhatsApp}
+                              className="inline-flex items-center gap-2 px-4 py-2 bg-[#25D366] hover:bg-[#1EBE5D] text-white font-bold rounded-xl text-xs sm:text-sm shadow-md transition-all"
+                            >
+                              <MessageCircle className="w-4 h-4" />
+                              <span>{lang === 'ar' ? 'إرسال عبر واتساب' : 'Envoyer sur WhatsApp'}</span>
+                            </button>
+
+                            {canShareFile && (
+                              <button
+                                type="button"
+                                onClick={handleShareFinalDoc}
+                                className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs shadow-md transition-all"
+                                title={lang === 'ar' ? 'مشاركة الملف من الهاتف' : 'Partager le fichier'}
+                              >
+                                <Share2 className="w-3.5 h-3.5" />
+                                <span>{lang === 'ar' ? 'مشاركة الملف' : 'Partager'}</span>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    {whatsAppSuccessMsg && (
+                      <p className="text-xs text-emerald-700 dark:text-emerald-300 font-semibold mt-2">
+                        {whatsAppSuccessMsg}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Collapsible Administrative History Log */}
+                {showHistory && (
+                  <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800 text-xs animate-fadeIn">
+                    <h5 className="font-bold text-slate-700 dark:text-slate-300 mb-2 flex items-center gap-1.5">
+                      <History className="w-3.5 h-3.5 text-[#005BAC]" />
+                      <span>{lang === 'ar' ? 'سجل العمليات الإدارية والمراسلات' : 'Journal des actions et décisions'}</span>
+                    </h5>
+                    {!selectedDemande.historiqueStatuts || selectedDemande.historiqueStatuts.length === 0 ? (
+                      <p className="text-slate-400 italic text-[11px]">
+                        {lang === 'ar' ? 'لا توجد عمليات مسجلة بعد في هذا الملف.' : 'Aucun événement journalisé pour ce dossier.'}
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                        {selectedDemande.historiqueStatuts.map((item, idx) => (
+                          <div key={idx} className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800 flex items-start justify-between gap-2 text-[11px]">
+                            <div>
+                              <span className="font-bold text-slate-800 dark:text-slate-200 block">
+                                {item.action} {item.statut ? `(${item.statut})` : ''}
+                              </span>
+                              <span className="text-slate-500">{item.motif || ''}</span>
+                            </div>
+                            <div className="text-end text-[10px] text-slate-400 font-mono shrink-0">
+                              <div>{formatDemandeDate(item.date, lang)}</div>
+                              <div>{item.employe}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
               </div>
 

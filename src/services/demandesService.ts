@@ -21,6 +21,25 @@ export type StatutDemande =
   | 'Délivré'
   | 'Rejetée';
 
+export interface DocumentFinalMeta {
+  name: string;
+  size: number;
+  type: string;
+  url?: string;
+  dataUrl?: string;
+  path?: string;
+  uploadedAt: string;
+  uploadedBy: string;
+}
+
+export interface StatutHistoryEntry {
+  statut?: string;
+  action: string;
+  date: string;
+  employe: string;
+  motif?: string;
+}
+
 export interface DemandeModel {
   id: string; // Numéro de suivi exact utilisé comme document ID
   numeroSuivi: string;
@@ -46,6 +65,8 @@ export interface DemandeModel {
     statut: 'en_attente' | 'validee' | 'refusee';
     motifRefus?: string;
   }>;
+  documentFinal?: DocumentFinalMeta | null;
+  historiqueStatuts?: StatutHistoryEntry[];
   cinRectoUrl?: string;
   cinVersoUrl?: string;
   piecesJointes?: UploadedFileMeta[];
@@ -201,3 +222,58 @@ export function formatDemandeDate(rawDate: any, lang: 'ar' | 'fr' = 'ar'): strin
     minute: '2-digit',
   });
 }
+
+/**
+ * Normalise un numéro de téléphone marocain au format international WhatsApp (+212, sans espaces ni +)
+ * Exemple: 0612345678 -> 212612345678, +212 7 12 34 56 78 -> 212712345678
+ */
+export function normalizeMoroccanPhone(raw: string): { valid: boolean; normalized: string; formatted: string } {
+  if (!raw) return { valid: false, normalized: '', formatted: '' };
+
+  let cleaned = raw.replace(/[\s\-\.\(\)\+]/g, '').trim();
+
+  if (cleaned.startsWith('00')) {
+    cleaned = cleaned.substring(2);
+  }
+
+  // Si commence par 06 ou 07 (10 chiffres)
+  if (/^0[67]\d{8}$/.test(cleaned)) {
+    cleaned = '212' + cleaned.substring(1);
+  } else if (/^[67]\d{8}$/.test(cleaned)) {
+    cleaned = '212' + cleaned;
+  }
+
+  // Format marocain mobile valide : 2126XXXXXXXX ou 2127XXXXXXXX (12 chiffres)
+  const isMoroccanMobile = /^212[67]\d{8}$/.test(cleaned);
+  const isValidInternational = /^\d{9,15}$/.test(cleaned);
+
+  if (isMoroccanMobile || isValidInternational) {
+    const formatted = isMoroccanMobile
+      ? `+${cleaned.substring(0, 3)} ${cleaned.substring(3, 4)} ${cleaned.substring(4, 6)} ${cleaned.substring(6, 8)} ${cleaned.substring(8, 10)} ${cleaned.substring(10, 12)}`
+      : `+${cleaned}`;
+    return { valid: true, normalized: cleaned, formatted };
+  }
+
+  return { valid: false, normalized: '', formatted: raw };
+}
+
+/**
+ * Ajoute une entrée dans l'historique administratif de la demande (historiqueStatuts)
+ */
+export async function logDemandeHistory(
+  numeroSuivi: string,
+  entry: StatutHistoryEntry,
+  currentHistory: StatutHistoryEntry[] = []
+): Promise<void> {
+  const updatedHistory = [
+    ...(currentHistory || []),
+    {
+      ...entry,
+      date: entry.date || new Date().toISOString(),
+    },
+  ];
+  await updateDemande(numeroSuivi, {
+    historiqueStatuts: updatedHistory,
+  });
+}
+

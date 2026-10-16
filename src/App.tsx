@@ -168,6 +168,17 @@ const DEFAULT_ANNOUNCEMENTS = [
         }
       }
     }
+
+    // Check if URL contains query parameter for tracking or service (e.g. from WhatsApp notification)
+    const searchParams = new URLSearchParams(window.location.search);
+    const tabParam = searchParams.get('tab');
+    const refParam = searchParams.get('ref') || searchParams.get('track');
+    if (tabParam === 'track' || refParam) {
+      setActiveTab('track');
+      if (refParam) {
+        setTargetTrackingNumber(refParam.toUpperCase());
+      }
+    }
   }, []);
 
   // Load auth state and announcements on start
