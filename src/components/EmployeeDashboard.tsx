@@ -20,7 +20,9 @@ import {
 import { 
   uploadFinalDocumentWithRetry, 
   deleteFinalDocument, 
-  validateFinalDocumentFile 
+  validateFinalDocumentFile,
+  FinalDocPhase,
+  FinalDocProgressEvent
 } from '../services/finalDocumentService.ts';
 import { generateReceiptPdf, generateOfficialCivilDocumentPdf } from '../services/pdfService.ts';
 
@@ -58,6 +60,9 @@ export default function EmployeeDashboard({ lang, user }: EmployeeDashboardProps
   // Final Document Upload & Actions State
   const [isUploadingFinalDoc, setIsUploadingFinalDoc] = useState<boolean>(false);
   const [finalDocProgress, setFinalDocProgress] = useState<number>(0);
+  const [finalDocPhase, setFinalDocPhase] = useState<FinalDocPhase>('idle');
+  const [finalDocAttempt, setFinalDocAttempt] = useState<number>(1);
+  const [finalDocPendingFile, setFinalDocPendingFile] = useState<File | null>(null);
   const [finalDocError, setFinalDocError] = useState<string>('');
   const [finalDocSuccess, setFinalDocSuccess] = useState<string>('');
   const [whatsAppSuccessMsg, setWhatsAppSuccessMsg] = useState<string>('');
@@ -406,40 +411,46 @@ export default function EmployeeDashboard({ lang, user }: EmployeeDashboardProps
     XLSX.writeFile(workbook, fileName);
   };
 
-  // Téléversement ou remplacement du document final par l'employé avec retry et timeout
-  const handleFinalDocFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Exécution du téléversement du document final avec gestion des phases et retries
+  const executeFinalDocUpload = async (fileToUpload: File) => {
     if (!selectedDemande) return;
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    const file = files[0];
 
-    const validation = validateFinalDocumentFile(file, lang);
+    const validation = validateFinalDocumentFile(fileToUpload, lang);
     if (!validation.valid) {
       setFinalDocError(validation.error || '');
       if (finalDocInputRef.current) finalDocInputRef.current.value = '';
       return;
     }
 
+    setFinalDocPendingFile(fileToUpload);
     setIsUploadingFinalDoc(true);
     setFinalDocError('');
     setFinalDocSuccess('');
-    setFinalDocProgress(15);
+    setFinalDocProgress(5);
+    setFinalDocPhase('preparing');
+    setFinalDocAttempt(1);
 
     const agentEmail = user?.email || 'agent@ouledteima.ma';
 
     try {
       const finalMeta = await uploadFinalDocumentWithRetry(
         selectedDemande,
-        file,
+        fileToUpload,
         agentEmail,
-        (percent) => setFinalDocProgress(percent)
+        (progressEvent: FinalDocProgressEvent) => {
+          setFinalDocPhase(progressEvent.phase);
+          setFinalDocProgress(progressEvent.percent);
+          setFinalDocAttempt(progressEvent.attempt);
+        }
       );
 
+      setFinalDocPhase('done');
       setFinalDocSuccess(
         lang === 'ar'
           ? 'تم إرسال الوثيقة الرسمية بنجاح إلى ملف الطلب.'
           : 'Document officiel envoyé avec succès.'
       );
+      setFinalDocPendingFile(null);
 
       setSelectedDemande((prev) =>
         prev
@@ -453,7 +464,7 @@ export default function EmployeeDashboard({ lang, user }: EmployeeDashboardProps
                   statut: prev.statut,
                   date: new Date().toISOString(),
                   employe: agentEmail,
-                  motif: `Document final: "${file.name}" (${(file.size / 1024).toFixed(0)} Ko)`,
+                  motif: `Document final: "${fileToUpload.name}" (${(fileToUpload.size / 1024).toFixed(0)} Ko)`,
                 },
               ],
             }
@@ -462,16 +473,33 @@ export default function EmployeeDashboard({ lang, user }: EmployeeDashboardProps
 
       setTimeout(() => setFinalDocSuccess(''), 5000);
     } catch (err: any) {
-      console.error('Erreur upload document final:', err);
+      console.error('[EmployeeDashboard] Erreur upload document final:', err);
+      setFinalDocPhase('failed');
       setFinalDocError(
         err?.message ||
         (lang === 'ar'
           ? 'تعذر رفع الوثيقة بعد 3 محاولات. يرجى التحقق من اتصالك والمحاولة مجدداً.'
-          : 'Échec du téléversement du document final. Veuillez réessayer.')
+          : 'Échec du téléversement du document final après 3 tentatives. Veuillez vérifier votre connexion et réessayer.')
       );
     } finally {
       setIsUploadingFinalDoc(false);
       if (finalDocInputRef.current) finalDocInputRef.current.value = '';
+    }
+  };
+
+  // Sélection initiale d'un fichier par l'agent
+  const handleFinalDocFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    await executeFinalDocUpload(files[0]);
+  };
+
+  // Réessai du téléversement sans perte du fichier sélectionné
+  const handleRetryFinalDocUpload = async () => {
+    if (finalDocPendingFile) {
+      await executeFinalDocUpload(finalDocPendingFile);
+    } else if (finalDocInputRef.current) {
+      finalDocInputRef.current.click();
     }
   };
 
@@ -1293,22 +1321,52 @@ export default function EmployeeDashboard({ lang, user }: EmployeeDashboardProps
                     className="hidden"
                   />
 
-                  {/* Upload Progress Indicator */}
+                  {/* Upload Progress Indicator with Distinct Phases & Real Percentage */}
                   {isUploadingFinalDoc && (
-                    <div className="p-3 mb-3 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 rounded-xl">
-                      <div className="flex items-center justify-between text-xs font-bold text-[#005BAC] dark:text-blue-300 mb-1.5">
-                        <span className="flex items-center gap-1.5">
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          {lang === 'ar' ? 'جاري رفع الوثيقة النهائية بالخلفية...' : 'Téléversement en arrière-plan...'}
+                    <div className="p-3.5 mb-3 bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 rounded-xl">
+                      <div className="flex items-center justify-between text-xs font-bold text-[#005BAC] dark:text-blue-300 mb-2">
+                        <span className="flex items-center gap-2">
+                          <RefreshCw className="w-4 h-4 animate-spin shrink-0 text-[#005BAC] dark:text-blue-400" />
+                          <span>
+                            {finalDocPhase === 'preparing' && (
+                              lang === 'ar' ? 'المرحلة 1/3: فحص وتجهيز الوثيقة...' : 'Étape 1/3 : Analyse et préparation du document...'
+                            )}
+                            {finalDocPhase === 'uploading' && (
+                              lang === 'ar'
+                                ? `المرحلة 2/3: جاري رفع البيانات (${finalDocProgress}%)${finalDocAttempt > 1 ? ` (محاولة ${finalDocAttempt}/3)` : ''}...`
+                                : `Étape 2/3 : Téléversement des données (${finalDocProgress}%)${finalDocAttempt > 1 ? ` (Tentative ${finalDocAttempt}/3)` : ''}...`
+                            )}
+                            {finalDocPhase === 'saving' && (
+                              lang === 'ar' ? 'المرحلة 3/3: جاري حفظ مرجع الوثيقة في سجل الطلب...' : 'Étape 3/3 : Enregistrement et indexation du document...'
+                            )}
+                            {finalDocPhase === 'done' && (
+                              lang === 'ar' ? 'اكتمل إرسال الوثيقة بنجاح!' : 'Document officiel transmis avec succès !'
+                            )}
+                            {finalDocPhase === 'idle' && (
+                              lang === 'ar' ? 'جاري بدء العملية...' : 'Initialisation...'
+                            )}
+                          </span>
                         </span>
-                        <span className="font-mono">{finalDocProgress}%</span>
+                        <span className="font-mono text-xs font-extrabold px-2 py-0.5 rounded-md bg-white dark:bg-slate-800 border border-blue-200 dark:border-blue-800">
+                          {finalDocProgress}%
+                        </span>
                       </div>
-                      <div className="w-full bg-slate-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                      <div className="w-full bg-slate-200 dark:bg-slate-700 h-2.5 rounded-full overflow-hidden p-0.5">
                         <div
-                          className="bg-[#005BAC] h-full rounded-full transition-all duration-300"
-                          style={{ width: `${finalDocProgress}%` }}
+                          className="bg-gradient-to-r from-[#005BAC] to-blue-500 h-full rounded-full transition-all duration-300"
+                          style={{ width: `${Math.max(4, finalDocProgress)}%` }}
                         />
                       </div>
+                      {finalDocAttempt > 1 && (
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1.5 flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-amber-500" />
+                          <span>
+                            {lang === 'ar'
+                              ? `جاري إعادة المحاولة التلقائية رقم ${finalDocAttempt} من أصل 3...`
+                              : `Tentative automatique de secours ${finalDocAttempt}/3 en cours...`}
+                          </span>
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -1337,11 +1395,11 @@ export default function EmployeeDashboard({ lang, user }: EmployeeDashboardProps
 
                       <div className="flex items-center gap-2 self-end sm:self-center">
                         <a
-                          href={selectedDemande.documentFinal.dataUrl || selectedDemande.documentFinal.url}
+                          href={selectedDemande.documentFinal.url || selectedDemande.documentFinal.dataUrl || `/api/employee/demandes/${encodeURIComponent(selectedDemande.numeroSuivi)}/document-final`}
                           download={selectedDemande.documentFinal.name}
                           target="_blank"
                           rel="noreferrer"
-                          className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs flex items-center gap-1.5 transition-all"
+                          className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm"
                         >
                           <Download className="w-3.5 h-3.5" />
                           <span>{lang === 'ar' ? 'معاينة' : 'Voir'}</span>
@@ -1395,19 +1453,35 @@ export default function EmployeeDashboard({ lang, user }: EmployeeDashboardProps
                     </div>
                   )}
 
+                  {/* Clear non-blocking error message with dedicated retry button */}
                   {finalDocError && (
-                    <div className="mt-3 p-2.5 rounded-lg bg-red-100/70 dark:bg-red-950/50 text-red-800 dark:text-red-300 text-xs flex items-start gap-1.5">
+                    <div className="mt-3 p-3.5 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/60 text-red-800 dark:text-red-300 text-xs flex items-start gap-2.5">
                       <AlertCircle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
                       <div className="flex-1">
-                        <span className="block font-bold mb-0.5">{lang === 'ar' ? 'تنبيه خطأ :' : 'Erreur de téléversement :'}</span>
-                        <span>{finalDocError}</span>
-                        <button
-                          type="button"
-                          onClick={() => finalDocInputRef.current?.click()}
-                          className="mt-1.5 block text-xs underline font-bold"
-                        >
-                          {lang === 'ar' ? 'إعادة المحاولة' : 'Réessayer'}
-                        </button>
+                        <span className="block font-bold mb-1">
+                          {lang === 'ar' ? 'تنبيه: تعذر إتمام رفع الوثيقة' : 'Attention : Échec du téléversement'}
+                        </span>
+                        <p className="text-[11px] leading-relaxed text-red-700 dark:text-red-300 mb-2">
+                          {finalDocError}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleRetryFinalDocUpload}
+                            className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold text-xs inline-flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>{lang === 'ar' ? 'إعادة المحاولة' : 'Réessayer'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => finalDocInputRef.current?.click()}
+                            className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer"
+                          >
+                            <UploadCloud className="w-3.5 h-3.5" />
+                            <span>{lang === 'ar' ? 'اختيار ملف آخر' : 'Choisir un autre fichier'}</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}

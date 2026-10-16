@@ -121,10 +121,17 @@ export default function SuiviDemande({ lang, initialTrackingNumber, onNewRequest
 
     try {
       const doc = demande.documentFinal;
-      const downloadTarget = doc.dataUrl || doc.url;
+      const userCin = (cin || demande.cin || '').trim().toUpperCase();
+      let downloadTarget = doc.url || doc.dataUrl;
+
+      // Si l'URL pointe vers le point d'accès serveur, joindre le CIN pour vérification
+      if (downloadTarget && downloadTarget.includes('/api/citizen/demandes/')) {
+        const separator = downloadTarget.includes('?') ? '&' : '?';
+        downloadTarget = `${downloadTarget}${separator}cin=${encodeURIComponent(userCin)}`;
+      }
 
       if (!downloadTarget) {
-        throw new Error('Fichier introuvable');
+        downloadTarget = `/api/citizen/demandes/${encodeURIComponent(demande.numeroSuivi)}/document-final?cin=${encodeURIComponent(userCin)}`;
       }
 
       // Déclenchement du téléchargement côté client

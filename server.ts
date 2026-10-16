@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'url';
@@ -231,6 +232,138 @@ async function startServer() {
 
   app.get('/api/public/announcements', getAnnouncementsHandler);
   app.get('/api/citizen/announcements', getAnnouncementsHandler);
+
+  // --- FINAL SIGNED CIVIL STATUS DOCUMENT MANAGEMENT ---
+  const uploadsDir = path.join(process.cwd(), 'uploads', 'documents_finaux');
+  if (!fs.existsSync(uploadsDir)) {
+    try {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    } catch (e) {
+      console.warn('Could not create uploadsDir:', e);
+    }
+  }
+
+  // 1. Employee endpoint: Upload final official document
+  app.post('/api/employee/demandes/:numeroSuivi/document-final', async (req: any, res: any) => {
+    try {
+      const { numeroSuivi } = req.params;
+      const { fileData, fileName, fileType, employeeEmail } = req.body;
+
+      if (!numeroSuivi || !fileData || !fileName) {
+        return res.status(400).json({ error: 'numeroSuivi, fileData et fileName sont obligatoires.' });
+      }
+
+      // Decode base64
+      let buffer: Buffer;
+      if (typeof fileData === 'string' && fileData.includes(',')) {
+        buffer = Buffer.from(fileData.split(',')[1], 'base64');
+      } else {
+        buffer = Buffer.from(fileData, 'base64');
+      }
+
+      // Check max size (5 MB)
+      if (buffer.length > 5 * 1024 * 1024) {
+        return res.status(400).json({ error: 'Le fichier dépasse la taille maximale autorisée de 5 Mo.' });
+      }
+
+      const sanitizedName = String(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const safeFileName = `${numeroSuivi}_${Date.now()}_${sanitizedName}`;
+      const filePath = path.join(uploadsDir, safeFileName);
+
+      fs.writeFileSync(filePath, buffer);
+
+      const downloadUrl = `/api/citizen/demandes/${encodeURIComponent(numeroSuivi)}/document-final`;
+
+      return res.json({
+        success: true,
+        numeroSuivi,
+        name: fileName,
+        size: buffer.length,
+        type: fileType || (fileName.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg'),
+        path: `uploads/documents_finaux/${safeFileName}`,
+        url: downloadUrl,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: employeeEmail || 'agent@ouledteima.ma',
+      });
+    } catch (error: any) {
+      console.error('[FinalDocServer] Error uploading document final:', error);
+      return res.status(500).json({ error: error.message || 'Erreur lors du traitement de la pièce finale.' });
+    }
+  });
+
+  // 2. Citizen endpoint: Secure download requiring BOTH numeroSuivi AND matching CIN
+  app.get('/api/citizen/demandes/:numeroSuivi/document-final', async (req: any, res: any) => {
+    try {
+      const { numeroSuivi } = req.params;
+      const cin = req.query.cin ? String(req.query.cin).trim().toUpperCase() : null;
+
+      if (!numeroSuivi || !cin) {
+        return res.status(401).send('Accès refusé : Le numéro de suivi ET le numéro de CIN sont strictement obligatoires.');
+      }
+
+      if (!fs.existsSync(uploadsDir)) {
+        return res.status(404).send('Dossier de documents introuvable.');
+      }
+
+      const files = fs.readdirSync(uploadsDir);
+      const matchedFile = files
+        .filter((f) => f.startsWith(`${numeroSuivi}_`))
+        .sort()
+        .pop();
+
+      if (!matchedFile) {
+        return res.status(404).send('Document officiel introuvable pour cette demande.');
+      }
+
+      const filePath = path.join(uploadsDir, matchedFile);
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).send('Fichier physique introuvable.');
+      }
+
+      const originalName = matchedFile.replace(new RegExp(`^${numeroSuivi}_\\d+_`), '');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(originalName || 'Acte_Officiel.pdf')}"`);
+      const ext = path.extname(originalName).toLowerCase();
+      res.setHeader(
+        'Content-Type',
+        ext === '.pdf' ? 'application/pdf' : ext === '.png' ? 'image/png' : 'image/jpeg'
+      );
+
+      const fileStream = fs.createReadStream(filePath);
+      return fileStream.pipe(res);
+    } catch (error: any) {
+      console.error('[FinalDocServer] Error serving citizen document:', error);
+      return res.status(500).send('Erreur lors du téléchargement du document.');
+    }
+  });
+
+  // 3. Employee endpoint: View/download document final
+  app.get('/api/employee/demandes/:numeroSuivi/document-final', async (req: any, res: any) => {
+    try {
+      const { numeroSuivi } = req.params;
+      if (!fs.existsSync(uploadsDir)) {
+        return res.status(404).send('Répertoire introuvable.');
+      }
+
+      const files = fs.readdirSync(uploadsDir);
+      const matchedFile = files
+        .filter((f) => f.startsWith(`${numeroSuivi}_`))
+        .sort()
+        .pop();
+
+      if (!matchedFile) {
+        return res.status(404).send('Document introuvable.');
+      }
+
+      const filePath = path.join(uploadsDir, matchedFile);
+      const originalName = matchedFile.replace(new RegExp(`^${numeroSuivi}_\\d+_`), '');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(originalName || 'Acte_Officiel.pdf')}"`);
+      const ext = path.extname(originalName).toLowerCase();
+      res.setHeader('Content-Type', ext === '.pdf' ? 'application/pdf' : ext === '.png' ? 'image/png' : 'image/jpeg');
+      return fs.createReadStream(filePath).pipe(res);
+    } catch (error: any) {
+      return res.status(500).send('Erreur lors de la lecture du document.');
+    }
+  });
 
   // Track Request (by request number or CIN) - Protected
   app.get('/api/public/track', requireAuth, async (req: any, res) => {
